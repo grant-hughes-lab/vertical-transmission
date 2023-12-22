@@ -1,0 +1,324 @@
+---
+title: "LB_7_ASV_heatmap"
+author: "Laura Brettell"
+date: "2022-11-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## The project
+
+Vertical transmission – isofemale lines and rearing in closed conditions free from external microbes to examine transfer of bacteria between generations 
+
+## About
+
+This script uses the rarefied ASV table made previously, filters to keep only most abundant ASVs and generates heatmaps to show relative abundance of top ASVs across sampletypes
+
+
+using info from https://www.r-bloggers.com/2013/02/from-otu-table-to-heatmap/
+
+
+
+# Install packages
+
+```{r}
+
+# phyloseq itself
+if(!requireNamespace("BiocManager")){
+  install.packages("BiocManager")
+   }
+BiocManager::install("phyloseq")
+
+# qiime2r
+# to be able to convert my qiime2 files
+if (!requireNamespace("devtools", quietly = TRUE)){install.packages("devtools")}
+ devtools::install_github("jbisanz/qiime2R") # current version is 0.99.20
+ 
+# decontam for filtering contaminant reads
+# if (!require("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#BiocManager::install("decontam")
+
+#install.packages("MetBrewer")
+
+
+#library(MetBrewer)
+library(phyloseq)
+library(qiime2R)
+#library(ggplot2)
+library(tidyverse) # for filter_all()
+#library(dplyr) # for select command
+
+#library(gridExtra) # to arrange heatmaps
+
+
+```
+# import data
+
+
+```{r}
+# get metadata
+metadata <- read_q2metadata("metadata_updated_01092022_NAs_removed_new_cols.txt") # this is everything including those samples which were removed after rarefaction etc
+
+# get taxa
+ASVs <- read_qza("rarefied_table.qza") # now read in ASV data
+ASVs <- as.data.frame(ASVs$data)
+
+# get taxonomy info
+taxonomydata <- read_qza("taxonomy-silva.qza")$data # read in data
+tax_parse <- parse_taxonomy(taxonomydata)# make in more useful format
+
+```
+
+```{r}
+# make ASV table into proportions
+ASV_proportion <- ASVs
+ASV_proportion <- scale(ASV_proportion, center=F, scale=colSums(ASV_proportion))
+
+```
+
+# filtering ASVs to only the more common in the dataset
+
+keeping all ASVs present at >= 5% reads in >=1 sample
+
+```{r}
+
+ASV_subset <- filter_all(as.data.frame(ASV_proportion), any_vars(. >= 0.05))
+# reduces from 4516 ASVs to 125
+ASV_subset_transpose_rownames <- -t(ASV_subset)
+ASV_subset_transpose_rownames <- as.data.frame(ASV_subset_transpose_rownames)
+ASV_subset_transpose <- rownames_to_column(ASV_subset_transpose_rownames, var = "SampleID")
+
+# now to subset the taxonomy data to keep only the taxonomy for the ASV subset
+ASV_subset_names <- row.names(ASV_subset)
+tax_subset <- tax_parse[ASV_subset_names,]
+
+```
+
+
+```{r}
+# now to get an extra taxonomy column with the full long name and make unique for each ASV - to help with plotting
+# get the unformatted taxonomy info. This is useful for adding info to the plot later
+taxonomy_long <- read_qza("taxonomy-silva.qza")$data
+taxonomy_long <- taxonomy_long[,c(1:2)]
+# just need featureid and taxon
+
+temp <- tax_subset
+#temp <- as.data.frame(otu_table(ps.adult.offspring.filt))
+temp$Feature.ID <- row.names(temp) # specifying a col with FeatureID to merge with tax table
+
+temp <- merge(temp, taxonomy_long, by = "Feature.ID")
+# i want to call them by their tazon, but there are multiple ASVs witht he same taxon so to give each row a unique name I must ammend to have the featureID and taxon together
+temp$longname <- paste(temp$Feature.ID, "-", temp$Taxon)
+temp <- column_to_rownames(temp, var = "Feature.ID")
+
+#remove the non-numeric columns now
+#temp <- subset(temp, select = -c(Feature.ID, Taxon))
+#temp <- -t(temp)
+
+
+```
+
+
+
+# put into phyloseq object to make heatmap
+
+(to get phyloseq obj metadata etc)
+
+```{r}
+# get taxonomy into the right format
+taxmat_subs <- as.matrix(temp) # must be matrix for later steps
+TAX = tax_table(taxmat_subs) # convert to necessary format (formal class taxonomyTable) to make phyloseq object
+
+# get ASV table into the right format
+ASV_subset2 <- ASV_subset
+ASV_subset2[ASV_subset2 == 0] <- NA
+ASVmat_subs <- as.matrix(ASV_subset2) # convert to matrix
+OTU = otu_table(ASVmat_subs, taxa_are_rows = TRUE) # convert to necessary format  to make phyloseq object
+
+# create phyloseq object
+physeq = phyloseq(OTU, TAX) #create phyloseq object
+
+# get metadata matching up correctly
+physeq_name_order <- sample_names(physeq) # need to get the samples in the same order as they appear in the physeq object (ie the column orders of the ASVs)
+
+metadata_subset <- merge(metadata, ASV_subset_transpose, by="SampleID") # this way I dont need to filter after as it only keeps rows in both original dfs
+metadata_physeq_order <- metadata_subset 
+metadata_physeq_order %>%  arrange(SampleID, physeq_name_order)
+
+# make object of a class that phyloseq understands, by cropping the columns of interest from the metadata and specifying the same rows as the original phloseq object
+# this has an additional 2 col names compared to original 'sampletype-order' and 'line-order' just made added for easy plotting.
+
+sampledata2 = sample_data(data.frame(
+  Sample = metadata_physeq_order$SampleID,
+  seqID = metadata_physeq_order$seqid,
+  location = metadata_physeq_order$location,
+  line = metadata_physeq_order$line,
+  sampletype = metadata_physeq_order$sampletype,
+  neg_control = metadata_physeq_order$neg_control,
+  sample_order = metadata_physeq_order$`sampletype-order`,
+  line_order = metadata_physeq_order$`line-order`,
+  row.names=sample_names(physeq),
+  stringsAsFactors=FALSE
+))
+
+#make phyloseq obj for plotting
+physeq2 = merge_phyloseq(physeq, sampledata2)
+
+saveRDS(physeq2, "physeq_top_ASVs")
+# save phyloseq object for using for supp cooccurence heatmaps
+```
+
+# make heatmap
+
+```{r}
+heatmap_test <- plot_heatmap(
+              physeq2, 
+              method = NULL,
+              taxa.label = "longname",
+             taxa.order = "Genus",
+             sample.order = "sample_order",
+             sample.label = "sampletype",
+             trans = NULL,
+             low = "#B6BCE3",
+             high = "#3A3F64",
+             na.value = "white",
+             title = "heatmap")
+             
+heatmap_test2 <- heatmap_test + facet_wrap(~line_order, scales = "free_x", nrow = 1)
+
+heatmap_test2
+
+#ggsave("./plots/facet_heatmap_order.pdf", height=8, width=11, device="pdf") 
+
+# an alternative low = "#e7bcbc",high = "#000033",
+
+```
+
+# below is a tester to see how the heatmap looks when reduced to a smaller number of ASVs
+
+
+
+# filtering ASVs to only the more common in the dataset
+
+keeping all ASVs present at >= 5% reads in >=1 sample
+
+```{r}
+
+ASV_subset_6perc <- filter_all(as.data.frame(ASV_proportion), any_vars(. >= 0.06))
+# reduces from 4516 ASVs to 125
+ASV_subset_transpose_rownames <- -t(ASV_subset_6perc)
+ASV_subset_transpose_rownames <- as.data.frame(ASV_subset_transpose_rownames)
+ASV_subset_transpose <- rownames_to_column(ASV_subset_transpose_rownames, var = "SampleID")
+
+# now to subset the taxonomy data to keep only the taxonomy for the ASV subset
+ASV_subset_names <- row.names(ASV_subset)
+tax_subset <- tax_parse[ASV_subset_names,]
+
+```
+
+
+```{r}
+# now to get an extra taxonomy column with the full long name and make unique for each ASV - to help with plotting
+# get the unformatted taxonomy info. This is useful for adding info to the plot later
+taxonomy_long <- read_qza("taxonomy-silva.qza")$data
+taxonomy_long <- taxonomy_long[,c(1:2)]
+# just need featureid and taxon
+
+temp <- tax_subset
+#temp <- as.data.frame(otu_table(ps.adult.offspring.filt))
+temp$Feature.ID <- row.names(temp) # specifying a col with FeatureID to merge with tax table
+
+temp <- merge(temp, taxonomy_long, by = "Feature.ID")
+# i want to call them by their tazon, but there are multiple ASVs witht he same taxon so to give each row a unique name I must ammend to have the featureID and taxon together
+temp$longname <- paste(temp$Feature.ID, "-", temp$Taxon)
+temp <- column_to_rownames(temp, var = "Feature.ID")
+
+#remove the non-numeric columns now
+#temp <- subset(temp, select = -c(Feature.ID, Taxon))
+#temp <- -t(temp)
+
+
+```
+
+
+
+# put into phyloseq object to make heatmap
+
+(to get phyloseq obj metadata etc)
+
+```{r}
+# get taxonomy into the right format
+taxmat_subs <- as.matrix(temp) # must be matrix for later steps
+TAX = tax_table(taxmat_subs) # convert to necessary format (formal class taxonomyTable) to make phyloseq object
+
+# get ASV table into the right format
+ASV_subset2 <- ASV_subset
+ASV_subset2[ASV_subset2 == 0] <- NA
+ASVmat_subs <- as.matrix(ASV_subset2) # convert to matrix
+OTU = otu_table(ASVmat_subs, taxa_are_rows = TRUE) # convert to necessary format  to make phyloseq object
+
+# create phyloseq object
+physeq = phyloseq(OTU, TAX) #create phyloseq object
+
+# get metadata matching up correctly
+physeq_name_order <- sample_names(physeq) # need to get the samples in the same order as they appear in the physeq object (ie the column orders of the ASVs)
+
+metadata_subset <- merge(metadata, ASV_subset_transpose, by="SampleID") # this way I dont need to filter after as it only keeps rows in both original dfs
+metadata_physeq_order <- metadata_subset 
+metadata_physeq_order %>%  arrange(SampleID, physeq_name_order)
+
+# make object of a class that phyloseq understands, by cropping the columns of interest from the metadata and specifying the same rows as the original phloseq object
+# this has an additional 2 col names compared to original 'sampletype-order' and 'line-order' just made added for easy plotting.
+
+sampledata2 = sample_data(data.frame(
+  Sample = metadata_physeq_order$SampleID,
+  seqID = metadata_physeq_order$seqid,
+  location = metadata_physeq_order$location,
+  line = metadata_physeq_order$line,
+  sampletype = metadata_physeq_order$sampletype,
+  neg_control = metadata_physeq_order$neg_control,
+  sample_order = metadata_physeq_order$`sampletype-order`,
+  line_order = metadata_physeq_order$`line-order`,
+  row.names=sample_names(physeq),
+  stringsAsFactors=FALSE
+))
+
+#make phyloseq obj for plotting
+physeq2 = merge_phyloseq(physeq, sampledata2)
+
+#saveRDS(physeq2, "physeq_top_ASVs")
+# save phyloseq object for using for supp cooccurence heatmaps
+```
+
+
+# make heatmap
+
+```{r}
+heatmap_test <- plot_heatmap(
+              physeq2, 
+              method = NULL,
+              taxa.label = "longname",
+             taxa.order = "Genus",
+             sample.order = "sample_order",
+             sample.label = "sampletype",
+             trans = NULL,
+             low = "#B6BCE3",
+             high = "#3A3F64",
+             na.value = "white",
+             title = "heatmap")
+             
+heatmap_test3 <- heatmap_test + facet_wrap(~line_order, scales = "free_x", nrow = 1)
+
+heatmap_test3
+
+#ggsave("./plots/facet_heatmap_order.pdf", height=8, width=11, device="pdf") 
+
+# an alternative low = "#e7bcbc",high = "#000033",
+
+```
+

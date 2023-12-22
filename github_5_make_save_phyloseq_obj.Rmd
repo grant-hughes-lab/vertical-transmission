@@ -1,0 +1,153 @@
+---
+title: "LB_5_make_save_phyloseq_obj"
+author: "Laura Brettell"
+date: "2022-11-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## The project
+
+Vertical transmission – isofemale lines and rearing in closed conditions free from external microbes to examine transfer of bacteria between generations via the egg surface.
+
+## About
+
+This script makes a phyloseq object after filtering in r and qiime2
+
+
+
+# Install packages
+
+```{r}
+# phyloseq itself
+if(!requireNamespace("BiocManager")){
+  install.packages("BiocManager")
+   }
+BiocManager::install("phyloseq")
+
+# qiime2r
+# to be able to convert my qiime2 files
+#if (!requireNamespace("devtools", quietly = TRUE)){install.packages("devtools")}
+# devtools::install_github("jbisanz/qiime2R") # current version is 0.99.20
+ 
+# decontam for filtering contaminant reads
+# if (!require("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#BiocManager::install("decontam")
+
+#install.packages("MetBrewer")
+
+
+#library(MetBrewer)
+library(phyloseq)
+library(qiime2R)
+#library(ggplot2)
+#library(tidyverse)
+library(dplyr) # for select command
+#library(decontam)
+#library(vegan)
+#library(gridExtra) # to arrange heatmaps
+
+
+```
+
+
+
+# ASV
+
+```{r}
+# get taxa
+ASVs <- read_qza("./rarefied_table.qza") # now read in ASV data
+ASVs <- as.data.frame(ASVs$data)
+OTU <- otu_table(ASVs, taxa_are_rows = TRUE)
+
+list_of_ASVs <- row.names(ASVs) # for subsetting tax table
+
+list_of_samples <- colnames(ASVs) # for subsetting metadata
+```
+
+# taxonomy
+
+```{r}
+# get taxonomy info
+taxonomydata <- read_qza("./taxonomy-silva.qza")$data # read in data
+tax_parse <- parse_taxonomy(taxonomydata)# make in more useful format
+
+# this is taxonomy for all ASVs, I only want those that are left after rarefying
+taxonomy_4516 <- tax_parse[list_of_ASVs, ]
+taxonomy_4516 <- as.matrix(taxonomy_4516)
+
+TAX <- tax_table(taxonomy_4516)
+
+```
+
+
+# metadata
+
+
+```{r}
+metadata <- read_q2metadata("./metadata_updated_01092022_NAs_removed_new_cols.txt") # this is everything including those samples which were removed after rarefaction etc
+
+metadata_subset <- filter(metadata, SampleID %in% c(list_of_samples))
+
+```
+
+
+# put into phyloseq object 
+
+
+
+```{r}
+
+# create phyloseq object
+physeq = phyloseq(OTU, TAX) #create phyloseq object
+physeq # look at it
+sample_names(physeq) # check
+
+# get metadata matching up correctly
+physeq_name_order <- sample_names(physeq) # need to get the samples in the same order as they appear in the physeq object (ie the column orders of the ASVs)
+
+metadata_physeq_order <- metadata_subset 
+
+metadata_physeq_order %>%  arrange(SampleID, physeq_name_order)
+
+# make object of a class that phyloseq understands, by cropping the columns of interest from the metadata and specifying the same rows as the original phloseq object
+
+sampledata = sample_data(data.frame(
+  Sample = metadata_physeq_order$SampleID,
+  seqID = metadata_physeq_order$seqid,
+  location = metadata_physeq_order$location,
+  line = metadata_physeq_order$line,
+  sampletype = metadata_physeq_order$sampletype,
+  neg_control = metadata_physeq_order$neg_control,
+  row.names=sample_names(physeq),
+  stringsAsFactors=FALSE
+))
+
+physeq1007 = merge_phyloseq(physeq, sampledata)
+physeq1007
+
+
+```
+
+# save phyloseq object so I dont need all the commands every time
+
+```{r}
+
+#Save the final phyloseq object here: 
+
+saveRDS(physeq1007, "physeq1007")
+#use this command to save the phyloseq object to the working directory
+#So that you won't have to run all the commands above each time 
+
+ps = readRDS("physeq1007")
+#run this to load the  phyloseq obj 
+ps
+
+```
+
+

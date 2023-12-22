@@ -1,0 +1,52 @@
+## qiime2 to denoise and demultiplex 16S rRNA data
+ 
+# the following mostly comes from qiime2 moving pictures tutorial
+
+# make working dir
+$ cd ./working/
+
+##----Import data (fastqs) and look at it-----##
+
+$  qiime tools import --type 'SampleData[PairedEndSequencesWithQuality]' --input-path ../data/raw_data/ --input-format CasavaOneEightSingleLanePerSampleDirFmt --output-path demux-paired-end.qza
+
+# look at it to check using https://view.qiime2.org/
+$qiime demux summarize --i-data demux-paired-end.qza --o-visualization demux-paired-end.qzv
+
+
+
+
+##-----Denoise and trim-----##
+
+# trim based on QC plots in above visualisation 
+$ qiime dada2 denoise-paired --i-demultiplexed-seqs demux-paired-end.qza --p-trunc-len-f 250 --p-trunc-len-r 250 --p-trim-left-f 12 --p-trim-left-r 0 --o-representative-sequences rep-seqs-dada2.qza --o-table table-dada2.qza --o-denoising-stats stats-dada2.qza --p-n-threads 12
+
+# now to have a look at what is created I need to create qzv files
+
+$ qiime metadata tabulate --m-input-file stats-dada2.qza --o-visualization stats-dada2.qzv
+# looking at this qzv file, downloading the tsv files it confusingly calls it metadata.tsv - I don't like this so I have renamed it stats-dada2.tsv
+
+$ qiime feature-table summarize --i-table table-dada2.qza --o-visualization table-dada2.qzv --m-sample-metadata-file ../data/isofemale_metadata_temp.txt
+
+$ qiime feature-table tabulate-seqs --i-data rep-seqs-dada2.qza --o-visualization rep-seqs-dada2.qzv
+
+
+
+
+##------classifying taxonomy with SILVA------###
+
+$ wget https://data.qiime2.org/2022.11/common/silva-138-99-nb-classifier.qza
+
+# train the classifier
+$ qiime feature-classifier fit-classifier-naive-bayes --i-reference-reads silva-138-99-seqs.qza --i-reference-taxonomy silva-138-99-tax.qza --o-classifier silva-138-99-classifier-retrained.qza
+
+# run classifier on my seqs
+$ qiime feature-classifier classify-sklearn --i-classifier silva-138-99-classifier-retrained.qza --i-reads rep-seqs-dada2.qza --o-classification taxonomy-silva.qza
+
+
+#### then the resulting files will be moved to R for further QC using decontam
+
+
+
+
+
+

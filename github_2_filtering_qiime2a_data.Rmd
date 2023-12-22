@@ -1,0 +1,271 @@
+---
+title: "VT-filtering-qiime-data"
+author: "Laura Brettell"
+date: "2022-11-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## The project
+
+Vertical transmission – isofemale lines and rearing in closed conditions free from external microbes to examine transfer of bacteria between generations via the egg surface.
+
+## About
+
+This script takes data generated in qiime (described below) and filters the output to detect and remove contaminant ASVs and ASVs we aren't interested in. The list of remaining ASVs will at the end be used back with qiime to carry out rarefaction and diversity analyses.
+
+## The data
+
+Initial analyses were carried out using qiime2 (2021.2): dada2 was used for trimming (--p-trunc-len-f 250 --p-trunc-len-r 250 --p-trim-left-f 12 --p-trim-left-r 0),  denoising and creating the feature table (ASV counts per sample). Then, taxonomy was assigned to ASVs using the q2-feature-classifier plugin that had been trained on the silva-138-99 dataset. 
+
+(See separate doc for qiime commands)
+
+
+# Install packages
+
+```{r}
+# phyloseq itself
+if(!requireNamespace("BiocManager")){
+  install.packages("BiocManager")
+   }
+BiocManager::install("phyloseq")
+
+# qiime2r
+# to be able to convert my qiime2 files
+#if (!requireNamespace("devtools", quietly = TRUE)){install.packages("devtools")}
+# devtools::install_github("jbisanz/qiime2R") # current version is 0.99.20
+ 
+# decontam for filtering contaminant reads
+# if (!require("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#BiocManager::install("decontam")
+
+#install.packages("MetBrewer")
+
+
+#library(MetBrewer)
+library(phyloseq)
+library(qiime2R)
+library(ggplot2)
+#library(tidyverse)
+library(dplyr) # for select command
+library(decontam)
+#library(vegan)
+#library(gridExtra) # to arrange heatmaps
+
+
+```
+# import data and create phyloseq object
+
+Take data from qiime2 and put it into a phyloseq object that decontam can work with
+
+```{r}
+
+# taxonomy
+taxonomydata <- read_qza("taxonomy-silva.qza")$data # read in data
+tax_parsed <- parse_taxonomy(taxonomydata) # make in more useful format
+taxmat <- as.matrix(tax_parsed) # must be matrix for later steps
+#rownames(taxmat) # checking
+colnames(taxmat) # more checking
+class(taxmat) # rechecking is matrix
+TAX = tax_table(taxmat) # convert to necessary format (matrix) to make phyloseq object
+#TAX # checking
+
+
+# ASV table
+ASVs <- read_qza("table-dada2.qza") # now read in ASV data
+ASV_df <- as.data.frame(ASVs$data) # extract relevant data
+ASVmat <- as.matrix(ASV_df) # convert to matrix
+#rownames(ASVmat) # chekcing the same as tax
+#colnames(ASVmat) # checking
+class(ASVmat) # again must be matrix
+OTU = otu_table(ASVmat, taxa_are_rows = TRUE) # convert to necessary format (matrix) to make phyloseq object
+#OTU # checking
+
+
+# create phyloseq object
+physeq = phyloseq(OTU, TAX) #create phyloseq object
+physeq # look at it
+sample_names(physeq) # check
+
+temp <- as.data.frame(tax_table(physeq)) # checking taxa columns are right
+
+
+
+# metadata
+metadata <- read_q2metadata("metadata_updated_01092022_NAs_removed.txt") # metadata
+
+
+physeq_name_order <- sample_names(physeq) # need to get the samples in the same order as they appear in the physeq object (ie the column orders of the ASVs)
+
+metadata_physeq_order <- metadata 
+metadata_physeq_order <- metadata_physeq_order %>%  arrange(SampleID, physeq_name_order)
+
+# make object of a class that phyloseq understands, by cropping the columns of interest from the metadata and specifying the same rows as the original phloseq object
+
+sampledata = sample_data(data.frame(
+  Sample = metadata_physeq_order$SampleID,
+  seqID = metadata_physeq_order$seqid,
+  location = metadata_physeq_order$location,
+  line = metadata_physeq_order$line,
+  sampletype = metadata_physeq_order$sampletype,
+  neg_control = metadata_physeq_order$neg_control,
+  row.names=sample_names(physeq),
+  stringsAsFactors=FALSE
+))
+
+
+physeq2 = merge_phyloseq(physeq, sampledata)
+physeq2
+
+```
+
+
+
+
+
+
+## Identifying and dealing with contaminants
+
+
+# Decontam
+
+https://benjjneb.github.io/decontam/vignettes/decontam_intro.html
+
+"The first decontam ingredient is a feature table derived from your raw data, i.e. a table of the relative abundances of sequence features (columns) in each sample (rows). These “sequence features” can be any of a wide variety of feature types, including amplicon sequence variants (ASVs)...".
+
+"The second decontam ingredient is one of two types of metadata:
+
+DNA quantitation data recording the concentration of DNA in each sample. Most often this is collected in the form of fluorescent intensities measured prior to mixing samples into equimolar ratios for sequencing (and after PCR in amplicon sequencing), but sometimes it is collected via qPCR or other approach on extracted DNA.
+
+A defined set of “negative control” samples in which sequencing was performed on blanks without any biological sample added. Extraction controls are preferred, and in amplicon sequencing the negative controls should also be carried through the PCR step, as each step in the workflow has the potential to introduce new contaminants."
+
+...here I'm using the latter.
+
+# Inspect library sizes
+
+```{r}
+df <- as.data.frame(sample_data(physeq2)) # Put sample_data into a ggplot-friendly data.frame
+df$LibrarySize <- sample_sums(physeq2)
+df <- df[order(df$LibrarySize),]
+df$Index <- seq(nrow(df))
+ggplot(data=df, aes(x=Index, y=LibrarySize, color=neg_control))  + geom_point(alpha=0.7, size=1)
+
+#276 samples        
+```
+
+
+Most of the negative controls are low but they are mixed in with samples, and one is high (>20000 reads).
+
+
+
+# identify contaminants using Decontam
+
+"The second contaminant identification method we’ll use is the “prevalence” method. In this method, the prevalence (presence/absence across samples) of each sequence feature in true positive samples is compared to the prevalence in negative controls to identify contaminants"
+
+(the other option would be using qpcr data which we don't have here)
+
+The default for determining a contaminant is that it reaches a probability of 0.1 in the statistical test being performed. Here I am using a threshold=0.5 (as suggested by Diaz et al 2021), that will identify as contaminants all sequences that are more prevalent in negative controls than in positive samples. 
+
+
+```{r}
+sample_data(physeq2)$is.neg <- sample_data(physeq2)$neg_control == "negative"
+# summarizing the data on whether each sample is a true sample or control as a logical variable, with TRUE for control samples, as that is the form required by isContaminant.
+contamdf.prev05 <- isContaminant(physeq2, method="prevalence", neg="is.neg", threshold = 0.5)
+table(contamdf.prev05$contaminant)
+```
+
+This has assigned 179 ASVs as contaminants and 7432 ASVs as 'real'.
+
+Now inspect the output by plotting all ASVs, whether decontam has called them contaminants or not and their prevalence in true vs control samples (and check it looks appropriate)
+
+```{r}
+# Make phyloseq object of presence-absence in negative controls and true samples
+physeq2.pa <- transform_sample_counts(physeq2, function(abund) 1*(abund>0))
+physeq2.pa.neg <- prune_samples(sample_data(physeq2.pa)$neg_control == "negative", physeq2.pa)
+physeq2.pa.pos <- prune_samples(sample_data(physeq2.pa)$neg_control == "sample", physeq2.pa)
+# Make data.frame of prevalence in positive and negative samples
+df.pa <- data.frame(pa.pos=taxa_sums(physeq2.pa.pos), pa.neg=taxa_sums(physeq2.pa.neg),
+                      contaminant=contamdf.prev05$contaminant)
+ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) + geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (True Samples)")
+
+```
+
+# remove contaminants and unwanted data
+
+Now subset the phyloseq object to keep the samples (not negatives) and remove contaminant ASVs, and ASVs we aren't interested in (chloroplast, mitochondria, archaea)
+
+https://lakarstens.github.io/ControllingContaminants16S/Analyses/ControllingContaminants16S_decontam.html
+
+```{r}
+
+#now to remove the ASVs determined to be contaminants
+physeq_cont_removed <- prune_taxa(!contamdf.prev05$contaminant, physeq2)
+# now remove negative controls and keep only the samples
+physeq_cont_removed <- prune_samples(sample_data(physeq_cont_removed)$neg_control == "sample", physeq_cont_removed)
+
+# remove chloroplast seqs
+physeq_cont_removed <- subset_taxa(physeq_cont_removed, (Order != "Chloroplast") | is.na(Class))
+
+# check they've gone - yes
+tax_no_cloro <- as.data.frame(tax_table(physeq_cont_removed))
+#write_csv(tax_no_cloro, "tax_no_chloro.csv")
+# reduced to 7327 ASVs
+
+# remove mitochondrial seqs
+physeq_cont_removed <- subset_taxa(physeq_cont_removed, (Family != "Mitochondria") | is.na(Family))
+tax_no_cloro_mito <- as.data.frame(tax_table(physeq_cont_removed))
+# 7292 ASVs
+
+#remove anything that isn't bacteria
+physeq_cont_removed <- subset_taxa(physeq_cont_removed, (Kingdom != "d__Archaea") | is.na(Kingdom))
+tax_no_cloro_mito_ar <- as.data.frame(tax_table(physeq_cont_removed))
+# 7248 ASVs
+physeq_cont_removed <- subset_taxa(physeq_cont_removed, (Kingdom != "d__Eukaryota") | is.na(Kingdom))
+tax_no_cloro_mito_ar_eu <- as.data.frame(tax_table(physeq_cont_removed))
+#7194
+
+#remove anything that isn't unassigned - although these must all have been contminants etc anyway as they have NAs for all samples
+#physeq_cont_removed <- subset_taxa(physeq_cont_removed, (Kingdom != "Unassigned") | is.na(Kingdom))
+
+```
+
+
+# Create an object containing only contaminants
+
+I want a record of which ASVs were assigned as contaminants and removed, for the supp data
+
+
+```{r}
+physeq_contaminants <- prune_taxa(contamdf.prev05$contaminant, physeq2)
+
+contaminant_list <-tax_table(physeq_contaminants)
+
+#write.csv(contaminant_list, "contaminant_ASVs-SILVA.csv")
+#these dont contain mito, chloro, etc, (well they might also have some of these) just those identified by decontam.
+
+```
+
+Now i need a list of ASVs to be included in the subsequent analyses
+
+```{r}
+true_ASVs <- as.data.frame(tax_table(physeq_cont_removed))
+
+#write.csv(true_ASVs, "true_ASVs_no_mito_cloro-SILVA.csv")
+# this is 7194 ASVs now
+
+```
+
+
+Now to use this ASV list to subset the qiime table-dada2.qza and continue with analyses
+
+
+
+
+
+

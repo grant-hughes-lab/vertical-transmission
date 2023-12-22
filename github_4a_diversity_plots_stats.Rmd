@@ -1,0 +1,637 @@
+---
+title: "VT-filtering-qiime-data"
+author: "Laura Brettell"
+date: "2022-11-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## The project
+
+Vertical transmission – isofemale lines and rearing in closed conditions free from external microbes to examine transfer of bacteria between generations via the egg surface.
+
+## About
+
+This script takes diversity metrics from qiime2 (LB_3_rarefaction_diveristy_qiime2.txt) and makes plots and calculates statistics
+
+
+
+# Install packages
+
+```{r}
+
+
+# to be able to convert my qiime2 files
+# if (!requireNamespace("devtools", quietly = TRUE)){install.packages("devtools")}
+# devtools::install_github("jbisanz/qiime2R") # current version is 0.99.20
+# install.packages("dunn.test")
+#install.packages("ggpubr")
+#library(devtools)
+#install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+
+
+library(qiime2R)
+library(ggplot2)
+library(tidyverse)
+library(dplyr) # for select command
+library(ggpubr)
+library(dunn.test)
+library(vegan)
+library(pairwiseAdonis)
+
+
+```
+
+
+# metadata
+
+
+```{r}
+metadata <- read_q2metadata("metadata_updated_01092022_NAs_removed.txt") # this is everything including those samples which were removed after rarefaction etc
+
+```
+
+# alpha diversity - Shannon
+
+Use the shannon diversity data generated in qiime2. 
+
+Get data
+
+```{r}
+shannon <- read_qza("shannon_vector.qza")
+shannon_meta<-shannon$data %>% rownames_to_column("SampleID") # this moves the sample names to a new column that matches the metadata and allows them to be merged
+shannon_meta<-
+metadata %>% 
+  left_join(shannon_meta)
+head(shannon_meta)
+# we have now added a column for the shannon diversity to our table which will make everything easy to plot.
+
+shannon_meta <- subset(shannon_meta, shannon_meta$shannon_entropy != "NA")
+```
+
+```{r}
+
+shannon_meta %>%
+  ggplot+
+  geom_boxplot(outlier.shape = NA) +
+  aes(x=factor(sampletype, level = c("Midgut", "Ovary", "Larval Water", "Larvae", "Adult")), y=shannon_entropy, fill=sampletype) +
+  scale_fill_manual(values = c("#7CC0A6", "#B796C3", "#999EBF", "#8E3F57",  "#C47588"))+
+  #coord_cartesian(ylim=c(0,1)) + # adjust y-axis
+  xlab("Sample Types") +
+  ylab("Shannon's Index")  +
+  theme_pubr() +
+  geom_jitter(width = 0.2, size=2.5) +
+  theme(legend.position="none")+
+  facet_grid(~`location`)#remove the legend as it isn't needed
+
+#ggsave("LB_shannon_sampletype_location1007.pdf", height=5, width=9, device="pdf") # save a PDF 5 inches by 9 inches
+
+```
+
+
+
+# statistcal analysis of shannon diversity
+
+Are there statistical differences between lab and field data?
+
+```{r}
+#Use kruskal wallis, a non-parametric test for global statistic 
+kruskal.test(shannon_entropy ~ location, data = shannon_meta) # p-value < 2.2e-16
+
+```
+
+No difference between lab vs field. 
+
+So calculate between sample types within each location
+
+
+```{r}
+# field
+
+shannon_meta_field <- subset(shannon_meta, shannon_meta$location == "Field")
+
+#Use kruskal wallis, a non-parametric test for global statistic 
+kruskal.test(shannon_entropy ~ sampletype, data = shannon_meta_field) # p-value < 2.2e-16
+
+```
+
+there are, so Dunn's test to see where differences are
+
+```{r}
+
+dunn.test(shannon_meta_field$shannon_entropy, shannon_meta_field$sampletype,method = "bonferroni") 
+
+```
+
+With low sample sizes the only statistically significant difference in adult vs larvae. Try with just the lab derived lines.
+
+
+```{r}
+# lab
+
+shannon_meta_lab <- subset(shannon_meta, shannon_meta$location == "Lab")
+
+#Use kruskal wallis, a non-parametric test for global statistic 
+kruskal.test(shannon_entropy ~ sampletype, data = shannon_meta_lab) # p-value < 2.2e-16
+
+```
+
+there are, so Dunn's test to see where differences are
+
+```{r}
+
+dunn.test(shannon_meta_lab$shannon_entropy, shannon_meta_lab$sampletype,method = "bonferroni") 
+
+```
+
+With the larger sample size here, there are now significant difs between:
+
+larvae vs adults
+larval water vs adults
+ovary vs larvae
+ovary vs larval water
+
+
+```{r}
+#Use kruskal wallis, a non-parametric test for global statistic 
+kruskal.test(shannon_entropy ~ sampletype, data = shannon_meta) # p-value < 2.2e-16
+
+```
+where are the differences?
+
+```{r}
+
+dunn.test(shannon_meta$shannon_entropy, shannon_meta$sampletype,method = "bonferroni") 
+
+```
+this has the extra difference of midgut to larvae.
+
+
+
+
+
+# beta diversity
+
+## metric 1 - bray curtis 
+
+```{r}
+
+bray <- read_qza("bray_curtis_pcoa_results.qza")
+bray <- bray$data$Vectors %>%
+  select(SampleID, PC1, PC2) 
+
+bray_meta <- merge(metadata, bray, by="SampleID") # this way I dont need to filter after as it only keeps rows in both original dfs
+
+```
+
+
+```{r}
+ggplot(bray_meta, aes(x=PC1, y=PC2))+geom_point(aes(fill=sampletype), 
+       colour="black",pch=21, size=7)+
+  ggtitle("Bray-Curtis")+
+  scale_fill_manual(values = c("#7CC0A6", "#B796C3", "#999EBF", "#8E3F57",  "#C47588"))+
+  theme_bw()+
+  xlab("PC1 (23.01%)")+
+  ylab("PC2 (13.67%)")+
+  labs_pubr()+
+  theme(panel.grid.major = element_blank(),
+    #    d.minor = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 16),
+        axis.text = element_text(size = 16)) +
+    facet_grid(~`location`)
+
+# PC1 and PC2 percentages are from emperor plot
+
+## ggsave("LB_bray-field_lab.pdf", height=5, width=9, device="pdf") save a PDF 5 inches by 9 inches
+```
+
+
+## statistical analysis of bray curtis dissimilarity
+
+```{r}
+brayDist <- read_qza("bray_curtis_distance_matrix.qza")
+brayDist <- brayDist$data
+head(brayDist)
+
+```
+
+```{r}
+#make a header for the first column/rownames of the dist matrix 
+
+#To ensure that I'm correctly pairing the sample_type with the order of the brayDist object,
+#Make a df that joins the dist and the unordered metadata object 
+brayDist_df <- as.matrix(brayDist)
+brayDist_df <- as.data.frame(brayDist_df)
+brayDist_df <- cbind(rownames(brayDist_df), data.frame(brayDist_df, row.names =NULL))
+colnames(brayDist_df)[1] <- "SampleID"
+colnames(metadata)[1]<-"SampleID"
+joined <- inner_join(brayDist_df,metadata, by = "SampleID")
+
+#Test if it's different by sample_type 
+adonis2(brayDist~joined$sampletype)
+```
+
+Yep! sampletype does affect beta diversity, now, which comparisons exactly
+
+```{r}
+pairwise.adonis2(brayDist~sampletype, data = joined)
+```
+
+all pairs show statistically significant differences apart from midgut vs ovary
+
+Are the two locations different? Don't suppose you need this here as there are only 2 locations
+
+```{r}
+#Test if it's differnt by location 
+adonis2(brayDist~joined$location)
+
+```
+```{r}
+pairwise.adonis2(brayDist~location, data = joined)
+```
+
+# beta diversity - unweighted unifrac
+
+get data
+
+```{r}
+uwunifrac <- read_qza("unweighted_unifrac_pcoa_results.qza")
+uwunifrac <- uwunifrac$data$Vectors %>%
+  select(SampleID, PC1, PC2) 
+
+uwunifrac_meta <- merge(metadata, uwunifrac, by="SampleID") # this way I dont need to filter after as it only keeps rows in both original dfs
+
+```
+
+```{r}
+ggplot(uwunifrac_meta, aes(x=PC1, y=PC2))+geom_point(aes(fill=sampletype), 
+       colour="black",pch=21, size=7)+
+  ggtitle("Unweighted Unifrac")+
+  scale_fill_manual(values = c("#7CC0A6", "#B796C3", "#999EBF", "#8E3F57",  "#C47588"))+
+  theme_bw()+
+  xlab("PC1 (14.36%)")+
+  ylab("PC2 (10.37%)")+
+  labs_pubr()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 16),
+        axis.text = element_text(size = 16))+
+    facet_grid(~`location`)
+
+#ggsave("LB_uwunifrac_field_lab.pdf", height=5, width=9, device="pdf") 
+
+
+# PC1 and PC2 labels came from emperor plot
+```
+
+
+## statistical analysis of unweighted unifrac dissimilarity
+
+```{r}
+uwuDist <- read_qza("unweighted_unifrac_distance_matrix.qza")
+uwuDist <- uwuDist$data
+head(uwuDist)
+
+```
+
+```{r}
+#make a header for the first column/rownames of the dist matrix 
+
+#To ensure that I'm correctly pairing the sample_type with the order of the brayDist object,
+#Make a df that joins the dist and the unordered metadata object 
+uwuDist_df <- as.matrix(uwuDist)
+uwuDist_df <- as.data.frame(uwuDist_df)
+uwuDist_df <- cbind(rownames(uwuDist_df), data.frame(uwuDist_df, row.names =NULL))
+colnames(uwuDist_df)[1] <- "SampleID"
+colnames(metadata)[1]<-"SampleID"
+joined2 <- inner_join(uwuDist_df,metadata, by = "SampleID")
+
+
+#Test if it's different by sample_type 
+adonis2(uwuDist~joined2$sampletype)# F = 10.929, p = 0.001, R2 = 0.1603
+
+```
+
+
+```{r}
+pairwise.adonis2(uwuDist~sampletype, data = joined2) 
+
+```
+with this metric there is more overlap between sampletypes. There is no statistically significant difference between ovary and midgut again, but also between Adult and Ovary or midgut.
+
+Is there a statistically significance between lab and field derived isofemale lines?
+
+```{r}
+#Test if it's differnt by location 
+adonis2(uwuDist~joined2$location)# F = 3.3046, p = 0.001, R2 = 0.16393
+
+```
+
+```{r}
+pairwise.adonis2(uwuDist~location, data = joined2) 
+
+```
+
+# now to separate lab and field samples and look at beta diversity separately
+
+With the alpha diversity I could just separate the data in R and make 2x plots and 2x analyses of statistical differences, but for beta diversity I need to recalculate the differences between samples after subsetting, so doing this in qiime2 with the following code:
+
+$ qiime feature-table filter-samples --i-table ./core-metrics-results-1007/rarefied_table.qza --m-metadata-file metadata_updated_01092022_NAs_removed.txt --p-where "[location]='Field'" --o-filtered-table rarefied-table-Field.qza
+
+$ qiime diversity core-metrics-phylogenetic --i-phylogeny rooted-tree.qza --i-table rarefied-table-Field.qza --p-sampling-depth 1007 --m-metadata-file metadata_updated_01092022_NAs_removed.txt --output-dir core-metrics-results-1007-Field
+
+I subset the already rarefied sample so that these data directly correspond to the abundace/heatmap data.
+
+
+## metric 1 - bray curtis - lab
+
+```{r}
+
+braylab <- read_qza("bray_curtis_pcoa_results_Lab.qza")
+braylab <- braylab$data$Vectors %>%
+  select(SampleID, PC1, PC2) 
+
+braylab_meta <- merge(metadata, braylab, by="SampleID") 
+```
+
+
+```{r}
+ggplot(braylab_meta, aes(x=PC1, y=PC2))+geom_point(aes(fill=sampletype), 
+       colour="black",pch=21, size=7)+
+  ggtitle("Bray-Curtis - Lab")+
+  scale_fill_manual(values = c("#7CC0A6", "#B796C3", "#999EBF", "#8E3F57",  "#C47588"))+
+  theme_bw()+
+  xlab("PC1 (24.91%)")+
+  ylab("PC2 (14.01%)")+
+  labs_pubr()+
+  theme(panel.grid.major = element_blank(),
+    #    d.minor = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 16),
+        axis.text = element_text(size = 16)) 
+
+# PC1 and PC2 percentages are from emperor plot
+
+## ggsave("LB_bray_lab.pdf", height=5, width=9, device="pdf") save a PDF 5 inches by 9 inches
+```
+
+```{r}
+braylabDist <- read_qza("bray_curtis_distance_matrix_Lab.qza")
+braylabDist <- braylabDist$data
+head(braylabDist)
+
+#To ensure that I'm correctly pairing the sample_type with the order of the brayDist object,
+#Make a df that joins the dist and the unordered metadata object 
+braylabDist_df <- as.matrix(braylabDist)
+braylabDist_df <- as.data.frame(braylabDist_df)
+braylabDist_df <- cbind(rownames(braylabDist_df), data.frame(braylabDist_df, row.names =NULL))
+colnames(braylabDist_df)[1] <- "SampleID"
+colnames(metadata)[1]<-"SampleID"
+joinedlab <- inner_join(braylabDist_df,metadata, by = "SampleID")
+
+#Test if it's different by sample_type 
+adonis2(braylabDist~joinedlab$sampletype)
+```
+
+Yep! sampletype does affect beta diversity, now, which comparisons exactly
+
+```{r}
+pairwise.adonis2(braylabDist~sampletype, data = joinedlab)
+```
+
+Result: ovary and midgut do stat signif difference, all others dif from each other in pairwise comps (all ***, apart from larval water vs midgut thats 0.003)
+
+Now for testing whether dispersal is the same or different amongst sampletypes
+
+```{r}
+joinedlab$sampletype <- as.vector(joinedlab$sampletype)
+ps.disper_braylab <- betadisper(braylabDist,joinedlab$sampletype) 
+ps.disper_braylab 
+```
+
+posthoc test
+
+```{r}
+permutest(ps.disper_braylab, pairwise = TRUE)  
+```
+
+```{r}
+summary(permustats(permutest(ps.disper_braylab, pairwise=TRUE)))
+```
+There are differences, but not all are different from each other, will think about how to word and interpret.
+
+
+
+## metric 1 - bray curtis - field
+repeating as above but with the field derived isofemale lines data
+
+```{r}
+
+brayfield <- read_qza("bray_curtis_pcoa_results_Field.qza")
+brayfield <- brayfield$data$Vectors %>%
+  select(SampleID, PC1, PC2) 
+
+brayfield_meta <- merge(metadata, brayfield, by="SampleID") 
+
+ggplot(brayfield_meta, aes(x=PC1, y=PC2))+geom_point(aes(fill=sampletype), 
+       colour="black",pch=21, size=7)+
+  ggtitle("Bray-Curtis - Field")+
+  scale_fill_manual(values = c("#7CC0A6", "#B796C3", "#999EBF", "#8E3F57",  "#C47588"))+
+  theme_bw()+
+  xlab("PC1 (32.67%)")+
+  ylab("PC2 (13.46%)")+
+  labs_pubr()+
+  theme(panel.grid.major = element_blank(),
+    #    d.minor = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 16),
+        axis.text = element_text(size = 16)) 
+
+# PC1 and PC2 percentages are from emperor plot
+
+## ggsave("LB_bray_field.pdf", height=5, width=9, device="pdf") save a PDF 5 inches by 9 inches
+```
+
+
+# statistical analyses
+
+```{r}
+brayfieldDist <- read_qza("bray_curtis_distance_matrix_Field.qza")
+brayfieldDist <- brayfieldDist$data
+
+brayfieldDist_df <- as.matrix(brayfieldDist)
+brayfieldDist_df <- as.data.frame(brayfieldDist_df)
+brayfieldDist_df <- cbind(rownames(brayfieldDist_df), data.frame(brayfieldDist_df, row.names =NULL))
+colnames(brayfieldDist_df)[1] <- "SampleID"
+colnames(metadata)[1]<-"SampleID"
+joinedfield <- inner_join(brayfieldDist_df,metadata, by = "SampleID")
+
+
+adonis2(brayfieldDist~joinedfield$sampletype)
+```
+```{r}
+pairwise.adonis2(brayfieldDist~sampletype, data = joinedfield)
+```
+less statistical significance than the lab samples where there are more samples, but the same pattern.
+
+Now for testing dispersal 
+
+```{r}
+joinedfield$sampletype <- as.vector(joinedfield$sampletype)
+ps.disper_brayfield <- betadisper(brayfieldDist,joinedfield$sampletype) 
+ps.disper_brayfield 
+```
+
+posthoc test
+
+```{r}
+permutest(ps.disper_brayfield, pairwise = TRUE) 
+summary(permustats(permutest(ps.disper_brayfield, pairwise=TRUE)))
+```
+
+
+
+## metric 2 - unweighted unifrac -lab
+
+```{r}
+
+uw_uni_lab <- read_qza("unweighted_unifrac_pcoa_results_Lab.qza")
+uw_uni_lab <- uw_uni_lab$data$Vectors %>%
+  select(SampleID, PC1, PC2) 
+
+uw_uni_lab_meta <- merge(metadata, uw_uni_lab, by="SampleID") 
+
+ggplot(uw_uni_lab_meta, aes(x=PC1, y=PC2))+geom_point(aes(fill=sampletype), 
+       colour="black",pch=21, size=7)+
+  ggtitle("Unweighted unifrac - Lab")+
+  scale_fill_manual(values = c("#7CC0A6", "#B796C3", "#999EBF", "#8E3F57",  "#C47588"))+
+  theme_bw()+
+  xlab("PC1 (21.03%)")+
+  ylab("PC2 (6.79%)")+
+  labs_pubr()+
+  theme(panel.grid.major = element_blank(),
+    #    d.minor = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 16),
+        axis.text = element_text(size = 16)) 
+
+# PC1 and PC2 percentages are from emperor plot
+
+## ggsave("LB_uw-uni_lab.pdf", height=5, width=9, device="pdf") save a PDF 5 inches by 9 inches
+```
+
+```{r}
+uwlabDist <- read_qza("unweighted_unifrac_distance_matrix_Lab.qza")
+uwlabDist <- uwlabDist$data
+
+uwlabDist_df <- as.matrix(uwlabDist)
+uwlabDist_df <- as.data.frame(uwlabDist_df)
+uwlabDist_df <- cbind(rownames(uwlabDist_df), data.frame(uwlabDist_df, row.names =NULL))
+colnames(uwlabDist_df)[1] <- "SampleID"
+colnames(metadata)[1]<-"SampleID"
+uwjoinedlab <- inner_join(uwlabDist_df,metadata, by = "SampleID")
+
+adonis2(uwlabDist~uwjoinedlab$sampletype)
+```
+```{r}
+pairwise.adonis2(uwlabDist~sampletype, data = uwjoinedlab)
+```
+and dispersal
+```{r}
+uwjoinedlab$sampletype <- as.vector(uwjoinedlab$sampletype)
+ps.disper_uwlab <- betadisper(uwlabDist,uwjoinedlab$sampletype) 
+ps.disper_uwlab 
+```
+
+```{r}
+permutest(ps.disper_uwlab, pairwise = TRUE) 
+summary(permustats(permutest(ps.disper_uwlab, pairwise=TRUE)))
+```
+
+
+## metric 2 - unweighted unifrac -field
+
+
+
+
+```{r}
+
+uw_uni_field <- read_qza("unweighted_unifrac_pcoa_results_Field.qza")
+uw_uni_field <- uw_uni_field$data$Vectors %>%
+  select(SampleID, PC1, PC2) 
+
+uw_uni_field_meta <- merge(metadata, uw_uni_field, by="SampleID") 
+
+ggplot(uw_uni_field_meta, aes(x=PC1, y=PC2))+geom_point(aes(fill=sampletype), 
+       colour="black",pch=21, size=7)+
+  ggtitle("Unweighted unifrac - Field")+
+  scale_fill_manual(values = c("#7CC0A6", "#B796C3", "#999EBF", "#8E3F57",  "#C47588"))+
+  theme_bw()+
+  xlab("PC1 (17.48%)")+
+  ylab("PC2 (11.38%)")+
+  labs_pubr()+
+  theme(panel.grid.major = element_blank(),
+    #    d.minor = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 16),
+        axis.text = element_text(size = 16)) 
+
+# PC1 and PC2 percentages are from emperor plot
+
+## ggsave("LB_uw-uni_field.pdf", height=5, width=9, device="pdf") save a PDF 5 inches by 9 inches
+```
+
+```{r}
+uwfieldDist <- read_qza("unweighted_unifrac_distance_matrix_Field.qza")
+uwfieldDist <- uwfieldDist$data
+
+uwfieldDist_df <- as.matrix(uwfieldDist)
+uwfieldDist_df <- as.data.frame(uwfieldDist_df)
+uwfieldDist_df <- cbind(rownames(uwfieldDist_df), data.frame(uwfieldDist_df, row.names =NULL))
+colnames(uwfieldDist_df)[1] <- "SampleID"
+colnames(metadata)[1]<-"SampleID"
+uwjoinedfield <- inner_join(uwfieldDist_df,metadata, by = "SampleID")
+
+adonis2(uwfieldDist~uwjoinedfield$sampletype)
+```
+
+```{r}
+pairwise.adonis2(uwfieldDist~sampletype, data = uwjoinedfield)
+```
+
+and dispersal
+```{r}
+uwjoinedfield$sampletype <- as.vector(uwjoinedfield$sampletype)
+ps.disper_uwfield <- betadisper(uwfieldDist,uwjoinedfield$sampletype) 
+ps.disper_uwfield 
+```
+
+
+```{r}
+permutest(ps.disper_uwfield, pairwise = TRUE) 
+summary(permustats(permutest(ps.disper_uwfield, pairwise=TRUE)))
+```
+
+## tests with seed setting
+
+```{r}
+set.seed(1234)
+permutest(ps.disper_uwfield, pairwise = TRUE) 
+summary(permustats(permutest(ps.disper_uwfield, pairwise=TRUE)))
+```
+
+
+```{r}
+set.seed(1234)
+permutest(ps.disper_uwfield, pairwise = TRUE) 
+summary(permustats(permutest(ps.disper_uwfield, pairwise=TRUE)))
+```
+
+
+
+

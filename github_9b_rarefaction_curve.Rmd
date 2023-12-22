@@ -1,0 +1,70 @@
+---
+title: "LB_9b_rarefaction_curve"
+author: "Laura Brettell"
+date: "2022-11-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## The project
+
+Vertical transmission – isofemale lines and rearing in closed conditions free from external microbes to examine transfer of bacteria between generations 
+
+## About
+
+This script uses the rarefied phyloseq object made previously and created rarefaction curve 
+
+
+
+
+
+# Install packages
+
+```{r}
+
+# phyloseq itself
+#if(!requireNamespace("BiocManager")){
+#  install.packages("BiocManager")
+ #  }
+#BiocManager::install("phyloseq")
+
+
+#library(devtools)
+#devtools::install_github("gauravsk/ranacapa")
+
+library(phyloseq)
+library(qiime2R)
+library(ggplot2)
+library(ranacapa)
+
+```
+
+
+# import data
+
+```{r}
+Laura.ps = readRDS("physeq1007")
+```
+
+
+
+```{r}
+
+
+p <- ggrare(Laura.ps, step = 10, label = NULL, se = FALSE) + 
+  xlim(0,1007) + 
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line(colour = my_colours)) + 
+  facet_wrap(~sampletype)
+
+p
+
+```
+
+
+
+
+

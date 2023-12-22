@@ -1,0 +1,464 @@
+---
+title: "LB_8_cooccurence_heatmaps"
+author: "Laura Brettell"
+date: ""
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## The project
+
+Vertical transmission – isofemale lines and rearing in closed conditions free from external microbes to examine transfer of bacteria between generations 
+
+## About
+
+This script uses Holly/Kerri's code to create heatmaps showing correlations between abundance of pairs of ASVs in different samples. For adapting to our data, I have used the same cutoffs for which ASVs to include as the other heatmap, for consistency and to make the data more managable to visualise.
+
+# Install packages
+
+```{r}
+
+# phyloseq itself
+#if(!requireNamespace("BiocManager")){
+#  install.packages("BiocManager")
+#   }
+#BiocManager::install("phyloseq")
+
+# qiime2r
+# to be able to convert my qiime2 files
+#if (!requireNamespace("devtools", quietly = TRUE)){install.packages("devtools")}
+# devtools::install_github("jbisanz/qiime2R") # current version is 0.99.20
+ 
+library(phyloseq)
+library(qiime2R)
+#library(ggplot2)
+library(tidyverse) # for rownames_to_column
+#library(dplyr) # for select command
+
+#library(gridExtra) # to arrange heatmaps
+library(corrplot)
+library(rstatix)
+
+```
+# import data
+
+The phyloseq object which contains all ASVs present at >=5% in at least 1 sample. The ASV table here is proprtional data (but not neccessarily adding up to 1 as I converted to proprtions before removing the least abundant ASVs)
+
+```{r}
+ps = readRDS("physeq_top_ASVs")
+
+# get the phyloseq object I used for the last heatmap - this contains the top 125 ASVs (although the data is proprtional and I need counts for the correlation analysis)
+
+top_tax <- as.data.frame(tax_table(ps))
+# these are the ASVs we are interested in
+
+# get metadata
+metadata <- read_q2metadata("metadata_updated_01092022_NAs_removed_new_cols.txt") # this is everything including those samples which were removed after rarefaction etc
+
+# get counts
+ASVs <- read_qza("rarefied_table.qza") # now read in ASV data
+ASVs <- as.data.frame(ASVs$data)
+
+# get the unformatted taxonomy info. This is useful for adding info to the plot later
+taxonomy_long <- read_qza("taxonomy-silva.qza")$data
+taxonomy_long <- taxonomy_long[,c(1:2)]
+# just need featureid and taxon
+
+```
+
+# generate phyloseq object containing the top ASVs and count data for each sample
+
+```{r}
+#subset ASV table to keep just counts of the 125 ASVs
+top_tax_names <- row.names(top_tax)
+top_ASVs <- ASVs[rownames(ASVs) %in% top_tax_names, ] 
+
+# Also transposing as this is useful later
+top_ASVs_tr <- -t(top_ASVs)
+top_ASVs_tr <- as.data.frame(top_ASVs_tr)
+top_ASVs_tr <- rownames_to_column(top_ASVs_tr, var = "SampleID")
+
+# get taxonomy into the right format
+top_tax <- as.matrix(top_tax) # must be matrix for later steps
+TAX = tax_table(top_tax) # convert to necessary format (formal class taxonomyTable) to make phyloseq object
+
+# get ASV table into the right format
+ASVmat_subs <- as.matrix(top_ASVs) # convert to matrix
+OTU = otu_table(ASVmat_subs, taxa_are_rows = TRUE) # convert to necessary format  to make phyloseq object
+
+# create phyloseq object
+physeq = phyloseq(OTU, TAX) #create phyloseq object
+
+# get metadata matching up correctly
+physeq_name_order <- sample_names(physeq) # need to get the samples in the same order as they appear in the physeq object (ie the column orders of the ASVs)
+
+metadata_subset <- merge(metadata, top_ASVs_tr, by="SampleID") # this way I dont need to filter after as it only keeps rows in both original dfs
+metadata_physeq_order <- metadata_subset 
+metadata_physeq_order %>%  arrange(SampleID, physeq_name_order)
+
+# make object of a class that phyloseq understands, by cropping the columns of interest from the metadata and specifying the same rows as the original phloseq object
+# this has an additional 2 col names compared to original 'sampletype-order' and 'line-order' just made added for easy plotting.
+
+sampledata2 = sample_data(data.frame(
+  Sample = metadata_physeq_order$SampleID,
+  seqID = metadata_physeq_order$seqid,
+  location = metadata_physeq_order$location,
+  line = metadata_physeq_order$line,
+  sampletype = metadata_physeq_order$sampletype,
+  neg_control = metadata_physeq_order$neg_control,
+  sample_order = metadata_physeq_order$`sampletype-order`,
+  line_order = metadata_physeq_order$`line-order`,
+  row.names=sample_names(physeq),
+  stringsAsFactors=FALSE
+))
+
+#make phyloseq obj for plotting
+physeq2 = merge_phyloseq(physeq, sampledata2)
+
+```
+
+this makes a physeq object that contains rarefied counts (not proportions) for each sample, but only including the 125 ASVs of interest.
+
+I will now subset to each sampletypes and field vs lab, to see the top correlations within sampletypes, and see if they are the same for lab vs field.
+
+But first adult offspring altogether to check it all works...
+
+
+# subset to look at adult offspring first
+
+https://web.stanford.edu/class/bios221/labs/phyloseq/lab_phyloseq.html
+used this to see how to filter phyloseq objects according to number of time ASVs are seen
+
+```{r}
+ps.adult.offspring <- physeq2 %>%
+         subset_samples(sampletype == "Offspring - Adult")
+
+#remove any NAs and ASVs which are <=5%  of total reads in at least 5% of samples
+ps.adult.offspring.filt <- ps.adult.offspring
+ps.adult.offspring.filt <- filter_taxa(ps.adult.offspring.filt, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 16 ASVs
+#this removes any ASV not present with at least 5% of counts (max total counts is 1007 as this is from the rarefied table) in >=5% of samples in this subset (offspring - adults) 
+
+```
+
+
+```{r}
+
+temp <- as.data.frame(otu_table(ps.adult.offspring.filt))
+temp$Feature.ID <- row.names(temp) # specifying a col with FeatureID to merge with tax table
+
+temp <- merge(temp, taxonomy_long, by = "Feature.ID")
+# i want to call them by their tazon, but there are multiple ASVs witht he same taxon so to give each row a unique name I must ammend to have the featureID and taxon together
+temp$longname <- paste(temp$Feature.ID, "-", temp$Taxon)
+temp <- column_to_rownames(temp, var = "longname")
+
+#remove the non-numeric columns now
+temp <- subset(temp, select = -c(Feature.ID, Taxon))
+temp <- -t(temp)
+# here I've transposed to get the ASV names as columns (and therefore make correlations between them, the way copying the other card tried to find correlations between samples, which doesn't seem right)
+
+# and correlations...
+cc = cor(temp, method = "spearman")
+#corrplot(cc)
+corrplot(cc, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+#ggsave("correlation_plot_adults.pdf", height=12, width=12)
+# won't save properly for some reason, but can export form R plots window. Just problems arrising from such long ASV names (which will be shortened in illustrator later)
+
+# alternative
+#corrplot(cc, type = 'lower', order = 'hclust', tl.col = 'black',
+ #        cl.ratio = 0.2, tl.srt = 45, col = COL2('PuOr', 10), tl.cex = 0.2)
+```
+
+
+
+# now for individual heatmaps
+
+I should make a function for all of this but for now I'll just copy and paste
+
+## Adult offspring - field
+
+```{r}
+# subset
+ps.adult.offspring.field <- physeq2 %>%
+         subset_samples(sampletype == "Offspring - Adult" & location == "Field")
+
+ps.adult.offspring.field <- filter_taxa(ps.adult.offspring.field, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 16 ASVs
+
+# prepare data
+df.adult.offspring.field <- as.data.frame(otu_table(ps.adult.offspring.field))
+df.adult.offspring.field$Feature.ID <- row.names(df.adult.offspring.field) 
+
+df.adult.offspring.field <- merge(df.adult.offspring.field, taxonomy_long, by = "Feature.ID")
+df.adult.offspring.field$longname <- paste(df.adult.offspring.field$Feature.ID, "-", df.adult.offspring.field$Taxon)
+df.adult.offspring.field <- column_to_rownames(df.adult.offspring.field, var = "longname")
+
+df.adult.offspring.field <- subset(df.adult.offspring.field, select = -c(Feature.ID, Taxon))
+df.adult.offspring.field <- -t(df.adult.offspring.field)
+
+
+# determine correlations and make plots
+cc.aof = cor(df.adult.offspring.field, method = "spearman")
+corrplot(cc.aof, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+#ggsave("correlation_plot_adults.pdf", height=12, width=12)
+
+```
+
+
+## Adult offspring - lab
+
+```{r}
+# subset
+ps.adult.offspring.lab <- physeq2 %>%
+         subset_samples(sampletype == "Offspring - Adult" & location == "Lab")
+
+ps.adult.offspring.lab <- filter_taxa(ps.adult.offspring.lab, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 16 ASVs
+
+# prepare data
+df.adult.offspring.lab <- as.data.frame(otu_table(ps.adult.offspring.lab))
+df.adult.offspring.lab$Feature.ID <- row.names(df.adult.offspring.lab) 
+
+df.adult.offspring.lab <- merge(df.adult.offspring.lab, taxonomy_long, by = "Feature.ID")
+df.adult.offspring.lab$longname <- paste(df.adult.offspring.lab$Feature.ID, "-", df.adult.offspring.lab$Taxon)
+df.adult.offspring.lab <- column_to_rownames(df.adult.offspring.lab, var = "longname")
+
+df.adult.offspring.lab <- subset(df.adult.offspring.lab, select = -c(Feature.ID, Taxon))
+df.adult.offspring.lab <- -t(df.adult.offspring.lab)
+
+
+# determine correlations and make plots
+cc.aol = cor(df.adult.offspring.lab, method = "spearman")
+corrplot(cc.aol, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+```
+
+## Larvae offspring - field
+
+```{r}
+# subset
+ps.larvae.offspring.field <- physeq2 %>%
+         subset_samples(sampletype == "Offspring - Larvae" & location == "Field")
+
+ps.larvae.offspring.field <- filter_taxa(ps.larvae.offspring.field, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 12 ASVs
+
+# prepare data
+df.larvae.offspring.field <- as.data.frame(otu_table(ps.larvae.offspring.field))
+df.larvae.offspring.field$Feature.ID <- row.names(df.larvae.offspring.field) 
+
+df.larvae.offspring.field <- merge(df.larvae.offspring.field, taxonomy_long, by = "Feature.ID")
+df.larvae.offspring.field$longname <- paste(df.larvae.offspring.field$Feature.ID, "-", df.larvae.offspring.field$Taxon)
+df.larvae.offspring.field <- column_to_rownames(df.larvae.offspring.field, var = "longname")
+
+df.larvae.offspring.field <- subset(df.larvae.offspring.field, select = -c(Feature.ID, Taxon))
+df.larvae.offspring.field <- -t(df.larvae.offspring.field)
+
+
+# determine correlations and make plots
+cc.lof = cor(df.larvae.offspring.field, method = "spearman")
+corrplot(cc.lof, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+```
+
+
+## Larvae offspring - lab
+
+```{r}
+# subset
+ps.larvae.offspring.lab <- physeq2 %>%
+         subset_samples(sampletype == "Offspring - Larvae" & location == "Lab")
+
+ps.larvae.offspring.lab <- filter_taxa(ps.larvae.offspring.lab, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 26 ASVs
+
+# prepare data
+df.larvae.offspring.lab <- as.data.frame(otu_table(ps.larvae.offspring.lab))
+df.larvae.offspring.lab$Feature.ID <- row.names(df.larvae.offspring.lab) 
+
+df.larvae.offspring.lab <- merge(df.larvae.offspring.lab, taxonomy_long, by = "Feature.ID")
+df.larvae.offspring.lab$longname <- paste(df.larvae.offspring.lab$Feature.ID, "-", df.larvae.offspring.lab$Taxon)
+df.larvae.offspring.lab <- column_to_rownames(df.larvae.offspring.lab, var = "longname")
+
+df.larvae.offspring.lab <- subset(df.larvae.offspring.lab, select = -c(Feature.ID, Taxon))
+df.larvae.offspring.lab <- -t(df.larvae.offspring.lab)
+
+
+# determine correlations and make plots
+cc.lol = cor(df.larvae.offspring.lab, method = "spearman")
+corrplot(cc.lol, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+```
+
+## Larval water - field
+
+```{r}
+# subset
+ps.larval.water.field <- physeq2 %>%
+         subset_samples(sampletype == "Larval Water" & location == "Field")
+
+ps.larval.water.field <- filter_taxa(ps.larval.water.field, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 11 ASVs
+
+# prepare data
+df.larval.water.field <- as.data.frame(otu_table(ps.larval.water.field))
+df.larval.water.field$Feature.ID <- row.names(df.larval.water.field) 
+
+df.larval.water.field <- merge(df.larval.water.field, taxonomy_long, by = "Feature.ID")
+df.larval.water.field$longname <- paste(df.larval.water.field$Feature.ID, "-", df.larval.water.field$Taxon)
+df.larval.water.field <- column_to_rownames(df.larval.water.field, var = "longname")
+
+df.larval.water.field <- subset(df.larval.water.field, select = -c(Feature.ID, Taxon))
+df.larval.water.field <- -t(df.larval.water.field)
+
+
+# determine correlations and make plots
+cc.lwf = cor(df.larval.water.field, method = "spearman")
+corrplot(cc.lwf, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+```
+
+## Larval water - lab
+
+```{r}
+# subset
+ps.larval.water.lab <- physeq2 %>%
+         subset_samples(sampletype == "Larval Water" & location == "Lab")
+
+ps.larval.water.lab <- filter_taxa(ps.larval.water.lab, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 11 ASVs
+
+# prepare data
+df.larval.water.lab <- as.data.frame(otu_table(ps.larval.water.lab))
+df.larval.water.lab$Feature.ID <- row.names(df.larval.water.lab) 
+
+df.larval.water.lab <- merge(df.larval.water.lab, taxonomy_long, by = "Feature.ID")
+df.larval.water.lab$longname <- paste(df.larval.water.lab$Feature.ID, "-", df.larval.water.lab$Taxon)
+df.larval.water.lab <- column_to_rownames(df.larval.water.lab, var = "longname")
+
+df.larval.water.lab <- subset(df.larval.water.lab, select = -c(Feature.ID, Taxon))
+df.larval.water.lab <- -t(df.larval.water.lab)
+
+
+# determine correlations and make plots
+cc.lwl = cor(df.larval.water.lab, method = "spearman")
+corrplot(cc.lwl, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+```
+
+## midgut - field
+
+```{r}
+# subset
+ps.midgut.field <- physeq2 %>%
+         subset_samples(sampletype == "Midgut" & location == "Field")
+
+ps.midgut.field <- filter_taxa(ps.midgut.field, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 7 ASVs
+
+# prepare data
+df.midgut.field <- as.data.frame(otu_table(ps.midgut.field))
+df.midgut.field$Feature.ID <- row.names(df.midgut.field) 
+
+df.midgut.field <- merge(df.midgut.field, taxonomy_long, by = "Feature.ID")
+df.midgut.field$longname <- paste(df.midgut.field$Feature.ID, "-", df.midgut.field$Taxon)
+df.midgut.field <- column_to_rownames(df.midgut.field, var = "longname")
+
+df.midgut.field <- subset(df.midgut.field, select = -c(Feature.ID, Taxon))
+df.midgut.field <- -t(df.midgut.field)
+
+
+# determine correlations and make plots
+cc.mf = cor(df.midgut.field, method = "spearman")
+corrplot(cc.mf, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+```
+
+## midgut - lab
+
+```{r}
+# subset
+ps.midgut.lab <- physeq2 %>%
+         subset_samples(sampletype == "Midgut" & location == "Lab")
+
+ps.midgut.lab <- filter_taxa(ps.midgut.lab, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 18 ASVs
+
+# prepare data
+df.midgut.lab <- as.data.frame(otu_table(ps.midgut.lab))
+df.midgut.lab$Feature.ID <- row.names(df.midgut.lab) 
+
+df.midgut.lab <- merge(df.midgut.lab, taxonomy_long, by = "Feature.ID")
+df.midgut.lab$longname <- paste(df.midgut.lab$Feature.ID, "-", df.midgut.lab$Taxon)
+df.midgut.lab <- column_to_rownames(df.midgut.lab, var = "longname")
+
+df.midgut.lab <- subset(df.midgut.lab, select = -c(Feature.ID, Taxon))
+df.midgut.lab <- -t(df.midgut.lab)
+
+
+# determine correlations and make plots
+cc.ml = cor(df.midgut.lab, method = "spearman")
+corrplot(cc.ml, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+```
+
+## ovaries - field
+
+```{r}
+# subset
+ps.ovaries.field <- physeq2 %>%
+         subset_samples(sampletype == "Ovary" & location == "Field")
+
+ps.ovaries.field <- filter_taxa(ps.ovaries.field, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 8 ASVs
+
+# prepare data
+df.ovaries.field <- as.data.frame(otu_table(ps.ovaries.field))
+df.ovaries.field$Feature.ID <- row.names(df.ovaries.field) 
+
+df.ovaries.field <- merge(df.ovaries.field, taxonomy_long, by = "Feature.ID")
+df.ovaries.field$longname <- paste(df.ovaries.field$Feature.ID, "-", df.ovaries.field$Taxon)
+df.ovaries.field <- column_to_rownames(df.ovaries.field, var = "longname")
+
+df.ovaries.field <- subset(df.ovaries.field, select = -c(Feature.ID, Taxon))
+df.ovaries.field <- -t(df.ovaries.field)
+
+
+# determine correlations and make plots
+cc.of = cor(df.ovaries.field, method = "spearman")
+corrplot(cc.of, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+```
+
+## ovaries - lab
+
+```{r}
+# subset
+ps.ovaries.lab <- physeq2 %>%
+         subset_samples(sampletype == "Ovary" & location == "Lab")
+
+ps.ovaries.lab <- filter_taxa(ps.ovaries.lab, function(x) sum(x >= (0.05*1007)) >= (0.05*length(x)), TRUE)
+# gives 17 ASVs
+
+# prepare data
+df.ovaries.lab <- as.data.frame(otu_table(ps.ovaries.lab))
+df.ovaries.lab$Feature.ID <- row.names(df.ovaries.lab) 
+
+df.ovaries.lab <- merge(df.ovaries.lab, taxonomy_long, by = "Feature.ID")
+df.ovaries.lab$longname <- paste(df.ovaries.lab$Feature.ID, "-", df.ovaries.lab$Taxon)
+df.ovaries.lab <- column_to_rownames(df.ovaries.lab, var = "longname")
+
+df.ovaries.lab <- subset(df.ovaries.lab, select = -c(Feature.ID, Taxon))
+df.ovaries.lab <- -t(df.ovaries.lab)
+
+
+# determine correlations and make plots
+cc.ol = cor(df.ovaries.lab, method = "spearman")
+corrplot(cc.ol, tl.col = "black", order = "hclust", hclust.method = "average", addrect = 4, tl.cex = 0.2)
+
+```

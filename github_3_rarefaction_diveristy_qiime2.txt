@@ -1,0 +1,58 @@
+## qiime2 to filter and rarefy data, then calcualte diversity metrics, before going back to R to plot
+
+ 
+# this filters the ASV table so it contains only true ASVs and controls are removed from the dataset. Then a rarefaction curve is produced and the dataset is rarefied accordingly
+
+# load qiime2
+$ conda deactivate
+$ conda activate /opt/miniconda/envs/qiime2-2021.2/
+
+
+##----filter ASV table and look at it-----##
+
+# before running this, I need a txt file of feature-ids of the true ASVs from decontam. Take the file 'true_ASVs_no_mito_cloro-SILVA.csv' and copy the first column into a txt file and give the 'column' (1 line per ID) the header 'feature-id'
+
+$ qiime feature-table filter-features --i-table table-dada2.qza --m-metadata-file TRUE_ASVs_feature-ids.txt --o-filtered-table filt-table-true-seqs-SILVA.qza
+
+$ qiime feature-table summarize --i-table filt-table-true-seqs-SILVA.qza --o-visualization filt-table-true-seqs-SILVA.qzv --m-sample-metadata-file ../rerunning_with_NAs_removed/working/metadata_updated_01092022_NAs_removed.txt
+
+# at this point we have 276 samples and 7194 features
+
+
+# now take out the negative control samples (we have now accounted for these)
+$ qiime feature-table filter-samples --i-table filt-table-true-seqs-SILVA.qza --m-metadata-file ../rerunning_with_NAs_removed/working/metadata_updated_01092022_NAs_removed.txt --p-where "[neg_control]='sample'" --o-filtered-table filt-table-controls-removed-SILVA.qza
+
+
+$ qiime feature-table summarize --i-table filt-table-controls-removed-SILVA.qza --o-visualization filt-table-controls-removed-SILVA.qzv --m-sample-metadata-file ../rerunning_with_NAs_removed/working/metadata_updated_01092022_NAs_removed.txt
+
+# at this poitn we have 268 samples and 7093 features
+
+##-------generate rarefaction curve---------##
+
+$ qiime diversity alpha-rarefaction --i-table filt-table-controls-removed-SILVA.qza --p-max-depth 30000 --p-metrics 'observed_features' --m-metadata-file metadata_updated_01092022_NAs_removed.txt --p-steps 50 --o-visualization rarefaction-filt-30000.qzv
+
+# assessing curve plataeus vs samples retained, I have decided to rarefy to 1007, check curve
+
+$ qiime diversity alpha-rarefaction --i-table filt-table-controls-removed-SILVA.qza --p-max-depth 1007 --p-metrics 'observed_features' --m-metadata-file metadata_updated_01092022_NAs_removed.txt --p-steps 50 --o-visualization rarefaction-filt-1007.qzv
+
+# I won't actually rarefy here specifically, it is done as part of the diversity caluculations 
+
+##---------calculate diversity metrics----------##
+
+$ qiime phylogeny align-to-tree-mafft-fasttree --i-sequences rep-seqs-dada2.qza --o-alignment aligned-rep-seqs.qza --o-masked-alignment masked-aligned-rep-seqs.qza --o-tree unrooted-tree.qza --o-rooted-tree rooted-tree.qza
+
+$ qiime diversity core-metrics-phylogenetic --i-phylogeny rooted-tree.qza --i-table filt-table-controls-removed-SILVA.qza --p-sampling-depth 1007 --m-metadata-file metadata_updated_01092022_NAs_removed.txt --output-dir core-metrics-results-1007
+
+# one of the outputs here is the rarefied table
+
+# simpson diversity has to be calculated separately
+
+$ qiime diversity alpha --i-table ./core-metrics-results-1007/rarefied_table.qza --p-metric 'simpson' --o-alpha-diversity simpson1007.qza --output-dir core-metrics-results-1007/simpson
+
+# then move the simpson1007.qza , shannon_vector.qza, bray-curtis-pcoa-results and uwunifrac-pcoa results for plotting and the rarefied table for further analysis
+
+
+
+
+
+
